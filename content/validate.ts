@@ -279,6 +279,26 @@ function checkStdio(p: StdioProblem): string[] {
     if (tc.stdout !== undefined && tc.stdoutFile !== undefined) {
       errs.push(`case ${i}: set stdout or stdoutFile, not both`);
     }
+    // A data file name, not a path. The runner resolves these against
+    // content/data and refuses anything that climbs out, but the validator is
+    // where it should be caught: this runs on every authored AND generated
+    // problem, before anything is written to disk or read from it. The
+    // authoring pipeline exists so a model can write content, and `stdio`
+    // generation is still an open gap — the first generated case carrying
+    // "../../../../etc/passwd" should fail the gate, not the runner.
+    for (const [field, value] of [
+      ["stdinFile", tc.stdinFile],
+      ["stdoutFile", tc.stdoutFile],
+    ] as const) {
+      if (value === undefined) continue;
+      if (value !== value.trim() || value === "") {
+        errs.push(`case ${i}: ${field} must be a non-empty file name`);
+      } else if (!/^[A-Za-z0-9._-]+(\/[A-Za-z0-9._-]+)*$/.test(value) || value.split("/").includes("..")) {
+        errs.push(
+          `case ${i}: ${field} must be a relative name under content/data, got "${value}"`,
+        );
+      }
+    }
   });
   return errs;
 }

@@ -269,3 +269,40 @@ test("the corpus exercises all three problem kinds", () => {
   const kinds = new Set(ALL.map((p) => p.kind));
   assert.deepEqual([...kinds].sort(), ["class", "method", "stdio"]);
 });
+
+// -------------------------------------------------- stdio data file paths
+
+test("a stdio data file that climbs out of content/data is rejected", async () => {
+  // The validator is the right place for this, not the runner: it runs on
+  // every authored AND generated problem before anything touches the disk,
+  // and `stdio` generation is still an open gap in the authoring pipeline.
+  const { validateProblem } = await import("./validate.js");
+  const { ALL } = await import("./index.js");
+
+  const stdio = ALL.find((p) => p.kind === "stdio");
+  assert.ok(stdio, "no stdio problem to base the fixture on");
+
+  const bad = [
+    "../secret.txt",
+    "../../etc/passwd",
+    "/etc/passwd",
+    "sub/../../out.txt",
+    "",
+    " spaced.txt",
+  ];
+  for (const name of bad) {
+    const p = { ...stdio, testCases: [{ stdinFile: name, stdout: "1" }] } as typeof stdio;
+    const errs = validateProblem(p);
+    assert.ok(
+      errs.some((e) => /stdinFile/.test(e)),
+      `accepted stdinFile "${name}": ${JSON.stringify(errs)}`,
+    );
+  }
+
+  // And an ordinary name still passes, so the rule is not simply "always no".
+  for (const name of ["big-input.txt", "cp/fast-io-1.in", "case_01.txt"]) {
+    const p = { ...stdio, testCases: [{ stdinFile: name, stdout: "1" }] } as typeof stdio;
+    const errs = validateProblem(p).filter((e) => /stdinFile/.test(e));
+    assert.deepEqual(errs, [], `rejected a legitimate name "${name}"`);
+  }
+});

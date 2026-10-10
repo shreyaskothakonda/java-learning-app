@@ -9,7 +9,7 @@
 import { spawn } from "node:child_process";
 import { existsSync } from "node:fs";
 import { mkdtemp, mkdir, rm, writeFile, copyFile, readFile } from "node:fs/promises";
-import { join } from "node:path";
+import { join, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import type {
@@ -25,6 +25,36 @@ import { findJdk } from "./jdk.js";
 const SENTINEL = "\u0001CASE\u0001";
 const RUNTIME_DIR = fileURLToPath(new URL("../../../runtime/java/", import.meta.url));
 const SUPPORT = ["Judge.java", "TreeNode.java", "ListNode.java"];
+
+/**
+ * A Java class name, which is also the file name it is written to.
+ *
+ * Validated because `className` arrives over IPC and is interpolated into a
+ * path: `"../../../../tmp/x"` would write outside the run directory. No caller
+ * sends anything but the default today, which is exactly when a check is cheap
+ * — the same reasoning that validated `turnId` before it was used to name an
+ * IPC channel. A real Java class name is an identifier anyway, so nothing
+ * legitimate is excluded.
+ */
+const JAVA_IDENTIFIER = /^[A-Za-z_$][A-Za-z0-9_$]*$/;
+
+/**
+ * Keeps a joined path inside the directory it was joined to.
+ *
+ * `join(dir, name)` happily escapes `dir` when `name` climbs, so the result is
+ * resolved and checked rather than assumed. Content is first-party today; the
+ * authoring pipeline exists to let a model write more of it, and `stdio`
+ * generation is an open gap, so the day a generated case carries
+ * `stdinFile: "../../../../etc/passwd"` should end in an error, not a read.
+ */
+function containedPath(root: string, name: string): string {
+  const base = resolve(root);
+  const full = resolve(base, name);
+  if (full !== base && !full.startsWith(base + sep)) {
+    throw new Error(`refusing to read outside the data directory: ${name}`);
+  }
+  return full;
+}
 
 const DEFAULT_TIMEOUT_MS = 5000;
 const DEFAULT_HEAP_MB = 256;
@@ -285,9 +315,9 @@ async function runStdioCases(
   for (const i of indices) {
     const tc = problem.testCases[i]!;
     const stdin =
-      tc.stdin ?? (await readFile(join(contentDir, tc.stdinFile!), "utf8"));
+      tc.stdin ?? (await readFile(containedPath(contentDir, tc.stdinFile!), "utf8"));
     const want =
-      tc.stdout ?? (await readFile(join(contentDir, tc.stdoutFile!), "utf8"));
+      tc.stdout ?? (await readFile(containedPath(contentDir, tc.stdoutFile!), "utf8"));
     const limit = tc.timeLimitMs ?? problem.timeLimitMs ?? DEFAULT_TIMEOUT_MS;
 
     const j = sandboxed(javaBin, javaArgs(problem, "Main", runId), sandboxProfile, dir);
@@ -488,6 +518,22 @@ export async function runProblem(
       compileMs: compile.ms,
       runtimeMs: run.ms,
     };
+  } catch (e) {
+    // runProblem's contract is that it RETURNS a failure, never throws one:
+    // every other fault here — no JDK, missing support library, a compile
+    // error — comes back as a RunResult, and the UI renders `error`. A
+    // malformed test case (a stdinFile that climbs out of the data directory,
+    // say) was the one path that escaped as a rejected promise, which would
+    // surface in the renderer as an unhandled IPC error instead of a message.
+    return {
+      phase: "run",
+      diagnostics: [],
+      caseResults: [],
+      consoleLogs: [],
+      error: (e as Error).message,
+      compileMs: 0,
+      runtimeMs: 0,
+    };
   } finally {
     if (!keep) await rm(dir, { recursive: true, force: true });
   }
@@ -536,6 +582,13 @@ export async function runJavaSource(
   }
 
   const className = opts.className ?? "Main";
+  if (!JAVA_IDENTIFIER.test(className)) {
+    return {
+      ...empty,
+      ok: false,
+      stderr: `"${className}" is not a valid Java class name.`,
+    };
+  }
   const timeout = opts.timeoutMs ?? DEFAULT_TIMEOUT_MS;
 
   await mkdir(opts.workRoot, { recursive: true });

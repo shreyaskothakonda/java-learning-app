@@ -378,3 +378,78 @@ test("with no JDK the failure names the fix, not just the fault", async () => {
   assert.match(out.error, /brew install openjdk/);
   assert.match(out.error, /java_home/);
 });
+
+// ------------------------------------------------------ path containment
+
+test("a class name that is a path is refused, not written", async () => {
+  // `className` crosses the IPC boundary. No caller sends anything but the
+  // default, which is the point: a check is cheap now and the escape is
+  // silent later.
+  const { runJavaSource } = await import("./java-runner.js");
+  const { existsSync } = await import("node:fs");
+  const { mkdtemp, rm } = await import("node:fs/promises");
+  const { tmpdir } = await import("node:os");
+  const { join } = await import("node:path");
+
+  const workRoot = await mkdtemp(join(tmpdir(), "jt-escape-"));
+  const target = join(tmpdir(), "jt-escaped-class.java");
+  await rm(target, { force: true });
+
+  for (const bad of ["../../jt-escaped-class", "/tmp/jt-escaped-class", "Main;rm -rf /", "Main.java"]) {
+    const res = await runJavaSource("public class Main { public static void main(String[] a) {} }", {
+      workRoot,
+      className: bad,
+    });
+    assert.equal(res.ok, false, `accepted ${bad}`);
+    assert.match(res.stderr, /not a valid Java class name/);
+  }
+  assert.equal(existsSync(target), false, "a file was written outside the work directory");
+
+  // And the legitimate case still works, so the guard is not just "always no".
+  const good = await runJavaSource(
+    'public class Solution { public static void main(String[] a) { System.out.print("hi"); } }',
+    { workRoot, className: "Solution" },
+  );
+  assert.equal(good.ok, true, good.stderr);
+  assert.equal(good.stdout.trim(), "hi");
+
+  await rm(workRoot, { recursive: true, force: true });
+});
+
+test("a stdio case cannot read outside the data directory", async () => {
+  const { runProblem } = await import("./java-runner.js");
+  const { ALL } = await import("@content/index.js");
+  const { mkdtemp, rm, writeFile, mkdir } = await import("node:fs/promises");
+  const { tmpdir } = await import("node:os");
+  const { join } = await import("node:path");
+
+  const stdio = ALL.find((p) => p.kind === "stdio");
+  assert.ok(stdio, "no stdio problem in the corpus to test against");
+
+  const root = await mkdtemp(join(tmpdir(), "jt-data-"));
+  const dataDir = join(root, "data");
+  await mkdir(dataDir, { recursive: true });
+  // A secret one directory ABOVE the data dir — the thing a climbing path
+  // would reach.
+  await writeFile(join(root, "secret.txt"), "7\n", "utf8");
+
+  const malicious = {
+    ...stdio,
+    testCases: [{ stdinFile: "../secret.txt", stdout: "7", hidden: false }],
+  } as typeof stdio;
+
+  const res = await runProblem(malicious, stdio.solution, {
+    workRoot: join(root, "runs"),
+    runtimeDir: join(process.cwd(), "runtime", "java"),
+    dataDir,
+  });
+
+  // It must fail, specifically because the read was refused, and it must come
+  // back as a result rather than as a thrown rejection — the renderer shows
+  // `error`, and an unhandled IPC rejection is not a message anyone can read.
+  assert.notEqual(res.phase, "ok");
+  assert.match(res.error ?? "", /outside the data directory/);
+  assert.match(res.error ?? "", /secret\.txt/);
+
+  await rm(root, { recursive: true, force: true });
+});
