@@ -1,0 +1,10 @@
+#!/bin/sh
+# Content is the product. A reference solution that does not pass its own cases
+# is worse than a missing problem, so it must not be committable.
+set -e
+echo "pre-commit: typecheck"
+npx tsc --noEmit
+echo "pre-commit: unit tests"
+npm test --silent
+echo "pre-commit: compiling and running every reference solution, and every concept example"
+npm run --silent validate:all

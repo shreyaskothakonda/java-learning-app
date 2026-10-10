@@ -1,0 +1,83 @@
+# Packaging.
+#
+# Two decisions here are load-bearing and neither is obvious from the file.
+#
+# 1. extraResources, not asar. javac and java are separate processes that must
+#    read Judge.java and the seatbelt profile from a real path. Inside an asar
+#    archive those are not real files, so the runtime lives in Resources/ and
+#    src/main/paths.ts resolves it. The layout below the root is identical in
+#    development and in the bundle, which is what lets that module have one
+#    branch instead of three.
+#
+# 2. The Claude Agent SDK is EXCLUDED, not merely unused. Anthropic does not
+#    permit third-party products to offer claude.ai login to their users, so
+#    registry.ts refuses to construct that provider in a packaged build. That
+#    was already enforced in code; packaging made it physical, and cheaply —
+#    the SDK carries a 190 MB platform binary, so shipping something the app is
+#    forbidden to use would have been a third of the download.
+
+appId: com.octagramlabs.javatutor
+productName: Java Tutor
+copyright: Copyright © 2026 Shreyas Kothakonda
+
+# Signs the bundle ad-hoc after packing. electron-builder's identity:null does
+# not produce an unsigned app, it produces one whose signature does not verify.
+afterPack: ./scripts/after-pack.cjs
+
+directories:
+  output: release
+  buildResources: build
+
+files:
+  - out/**
+  - package.json
+  # Bundled into out/renderer by Vite; shipping the sources again would add
+  # ~100 MB of monaco alone.
+  - "!node_modules/monaco-editor/**"
+  - "!node_modules/@monaco-editor/**"
+  - "!node_modules/@fontsource/**"
+  - "!node_modules/react/**"
+  - "!node_modules/react-dom/**"
+  - "!node_modules/react-router/**"
+  - "!node_modules/gsap/**"
+  # See note 2 above. Both the wrapper and its platform binary.
+  - "!node_modules/@anthropic-ai/claude-agent-sdk/**"
+  - "!node_modules/@anthropic-ai/claude-agent-sdk-*/**"
+
+extraResources:
+  - from: runtime
+    to: runtime
+  - from: content/data
+    to: content/data
+
+mac:
+  category: public.app-category.developer-tools
+  icon: build/icon.png
+  darkModeSupport: true
+  target:
+    - target: dmg
+      arch: [arm64]
+    - target: zip
+      arch: [arm64]
+  # No Developer ID here — the only certificate on this machine is an Apple
+  # Development one, which cannot be notarised. So electron-builder does not
+  # sign, and scripts/after-pack.cjs ad-hoc signs the bundle instead, which at
+  # least leaves it internally consistent. The README says what distribution
+  # would actually need.
+  identity: null
+  # The hardened runtime only matters alongside notarisation, and turning it on
+  # without notarising buys nothing while adding entitlements to get wrong.
+  hardenedRuntime: false
+
+dmg:
+  title: Java Tutor
+  contents:
+    - x: 140
+      y: 180
+    - x: 400
+      y: 180
+      type: link
+      path: /Applications
+
+# Windows and Linux are not built or tested. The runner shells out to
+# /usr/libexec/java_home and sandbox-exec, both of which are macOS-only.

@@ -1,0 +1,36 @@
+;; seatbelt profile for unattended execution of generated Java.
+;;
+;; This is the one place the risk is real. The app runs one reference solution
+;; at a time, on a click, after a human chose to look at it. The AUTHORING
+;; pipeline runs hundreds of never-reviewed programs in a loop, overnight, with
+;; nobody watching — not from malice, but because a generated file-IO problem
+;; can easily contain a hallucinated Files.walk(Paths.get("/")).
+;;
+;; sandbox-exec is deprecated but fully functional, and is what Chrome and
+;; Claude Code itself use. It is the only control here that is a real boundary:
+;; --limit-modules is not (Socket and ProcessBuilder both live in java.base),
+;; and the SecurityManager was removed in JDK 24.
+(version 1)
+(deny default)
+
+;; Reading the JDK, the run directory and system libraries.
+(allow file-read*)
+
+;; Writing ONLY inside the run directory handed in as a parameter.
+(allow file-write*
+  (subpath (param "WORK"))
+  (subpath "/private/var/folders")
+  (literal "/dev/null")
+  (literal "/dev/urandom")
+  (literal "/dev/random"))
+
+;; The JVM needs these to start at all.
+(allow process-exec)
+(allow process-fork)
+(allow sysctl-read)
+(allow mach-lookup)
+(allow signal (target self))
+(allow ipc-posix-shm)
+
+;; The point of the exercise: no network, in any form.
+(deny network*)
